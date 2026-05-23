@@ -92,13 +92,14 @@ app.use((req, res, next) => {
   // this serves both the API and the client.
   // It is the only port that is not firewalled.
   const port = parseInt(process.env.PORT || "5000", 10);
+  const host = process.env.HOST || (process.platform === "win32" ? "127.0.0.1" : "0.0.0.0");
   httpServer.listen(
     {
       port,
-      host: process.env.HOST || (process.platform === "win32" ? "127.0.0.1" : "0.0.0.0"),
+      host,
     },
     () => {
-      log(`serving on http://127.0.0.1:${port}`);
+      log(`serving on http://${host}:${port}`);
     },
   );
 })();

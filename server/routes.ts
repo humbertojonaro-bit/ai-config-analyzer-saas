@@ -1,11 +1,15 @@
 import type { Express, Request, Response, NextFunction } from "express";
 import type { Server } from "node:http";
 import { z } from "zod";
+import Stripe from "stripe";
 import { storage } from "./storage";
 import { analyze, detectFormat, summarize } from "./analyzer";
 import { PLAN_LIMITS, newScanInputSchema, type PlanId, type Finding } from "@shared/schema";
 
 const AUTH_HEADER = "x-session-token";
+const stripe = process.env.STRIPE_SECRET_KEY
+  ? new Stripe(process.env.STRIPE_SECRET_KEY)
+  : null;
 
 function publicUser(u: { id: number; email: string; plan: string; createdAt: number }) {
   return { id: u.id, email: u.email, plan: u.plan as PlanId, createdAt: u.createdAt };
@@ -214,11 +218,66 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   });
 
   app.post("/api/billing/checkout", requireAuth, (req, res) => {
-    // Real implementation would create a Stripe Checkout Session, PayPal Order, or invoice request.
-    // The preview returns provider-specific simulated payloads so the full UX can be tested safely.
+    // Creates a real Stripe Checkout Session when Stripe is configured.
+    // PayPal and invoice remain simulated until their provider credentials/workflows are connected.
     const parsed = checkoutSchema.safeParse(req.body);
     if (!parsed.success) return res.status(400).json({ error: "invalid_checkout", message: parsed.error.issues[0].message });
     const { plan, paymentMethod } = parsed.data;
+
+    if (paymentMethod === "card" && stripe) {
+      const priceId = plan === "pro" ? process.env.STRIPE_PRO_PRICE_ID : process.env.STRIPE_TEAM_PRICE_ID;
+      if (!priceId) {
+        return res.status(500).json({
+          error: "stripe_price_missing",
+          message: `Missing Stripe price ID for ${plan}. Add ${plan === "pro" ? "STRIPE_PRO_PRICE_ID" : "STRIPE_TEAM_PRICE_ID"} in Render.`,
+        });
+      }
+
+      const origin =
+        process.env.APP_URL ||
+        `${req.protocol}://${req.get("x-forwarded-host") || req.get("host")}`;
+
+      stripe.checkout.sessions
+        .create({
+          mode: "subscription",
+          line_items: [{ price: priceId, quantity: 1 }],
+          success_url: `${origin}/#/billing?checkout=success&plan=${plan}`,
+          cancel_url: `${origin}/#/billing?checkout=cancelled`,
+          client_reference_id: String((req as any).user.id),
+          customer_email: (req as any).user.email,
+          metadata: {
+            userId: String((req as any).user.id),
+            plan,
+          },
+          subscription_data: {
+            metadata: {
+              userId: String((req as any).user.id),
+              plan,
+            },
+          },
+        })
+        .then((session) => {
+          if (!session.url) {
+            return res.status(500).json({ error: "stripe_session_missing_url", message: "Stripe did not return a checkout URL." });
+          }
+          return res.json({
+            simulated: false,
+            plan,
+            paymentMethod,
+            processor: "Stripe Checkout",
+            checkoutUrl: session.url,
+          });
+        })
+        .catch((error: any) => {
+          console.error("Stripe checkout error:", error);
+          return res.status(500).json({
+            error: "stripe_checkout_failed",
+            message: error?.message || "Failed to create Stripe Checkout session.",
+          });
+        });
+      return;
+    }
+
     const processor =
       paymentMethod === "paypal" ? "PayPal Checkout" : paymentMethod === "invoice" ? "Manual invoice" : "Stripe Checkout";
     const checkoutUrl =
@@ -262,9 +321,43 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     });
   });
 
-  // Webhook placeholders (signature verification would go here)
-  app.post("/api/webhooks/stripe", (_req, res) => {
-    res.json({ received: true, note: "Stripe webhook handler placeholder. Verify STRIPE_WEBHOOK_SECRET, then update user.plan from subscription events." });
+  app.post("/api/webhooks/stripe", (req, res) => {
+    if (!stripe || !process.env.STRIPE_WEBHOOK_SECRET) {
+      return res.json({ received: true, note: "Stripe webhook received, but STRIPE_WEBHOOK_SECRET is not configured." });
+    }
+
+    let event: Stripe.Event;
+    try {
+      const signature = req.header("stripe-signature");
+      if (!signature) return res.status(400).json({ error: "missing_stripe_signature" });
+      event = stripe.webhooks.constructEvent(
+        req.rawBody as Buffer,
+        signature,
+        process.env.STRIPE_WEBHOOK_SECRET,
+      );
+    } catch (error: any) {
+      console.error("Stripe webhook verification failed:", error);
+      return res.status(400).json({ error: "invalid_stripe_signature", message: error?.message });
+    }
+
+    if (event.type === "checkout.session.completed") {
+      const session = event.data.object as Stripe.Checkout.Session;
+      const userId = Number(session.metadata?.userId || session.client_reference_id);
+      const plan = session.metadata?.plan as PlanId | undefined;
+      if (userId && (plan === "pro" || plan === "team")) {
+        storage.setUserPlan(userId, plan);
+      }
+    }
+
+    if (event.type === "customer.subscription.deleted") {
+      const subscription = event.data.object as Stripe.Subscription;
+      const userId = Number(subscription.metadata?.userId);
+      if (userId) {
+        storage.setUserPlan(userId, "free");
+      }
+    }
+
+    res.json({ received: true });
   });
 
   app.post("/api/webhooks/paypal", (_req, res) => {

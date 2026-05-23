@@ -105,8 +105,10 @@ export default function Billing() {
       return await r.json();
     },
     onSuccess: (d, variables) => {
-      // In a real flow we'd redirect to the provider checkout URL.
-      // For preview, surface the simulated confirm step.
+      if (!d.simulated && d.checkoutUrl) {
+        window.location.href = d.checkoutUrl;
+        return;
+      }
       setCheckoutDetails(d);
       if (d.simulated) setConfirmPlan(variables.plan);
     },
