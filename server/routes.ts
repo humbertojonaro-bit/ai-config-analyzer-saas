@@ -241,8 +241,8 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         .create({
           mode: "subscription",
           line_items: [{ price: priceId, quantity: 1 }],
-          success_url: `${origin}/#/billing?checkout=success&plan=${plan}`,
-          cancel_url: `${origin}/#/billing?checkout=cancelled`,
+          success_url: `${origin}/#/checkout/success?plan=${plan}`,
+          cancel_url: `${origin}/#/checkout/cancelled`,
           client_reference_id: String((req as any).user.id),
           customer_email: (req as any).user.email,
           metadata: {

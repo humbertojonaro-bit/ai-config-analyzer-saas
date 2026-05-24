@@ -15,6 +15,7 @@ import ScanResults from "@/pages/ScanResults";
 import Scans from "@/pages/Scans";
 import Billing from "@/pages/Billing";
 import Docs from "@/pages/Docs";
+import CheckoutReturn from "@/pages/CheckoutReturn";
 import NotFound from "@/pages/not-found";
 
 function Protected({ children }: { children: React.ReactNode }) {
@@ -30,6 +31,8 @@ function AppRouter() {
       <Route path="/" component={Landing} />
       <Route path="/signup">{() => <Auth mode="signup" />}</Route>
       <Route path="/login">{() => <Auth mode="login" />}</Route>
+      <Route path="/checkout/success">{() => <CheckoutReturn status="success" />}</Route>
+      <Route path="/checkout/cancelled">{() => <CheckoutReturn status="cancelled" />}</Route>
 
       <Route path="/app">{() => <Protected><Dashboard /></Protected>}</Route>
       <Route path="/scan/new">{() => <Protected><NewScan /></Protected>}</Route>
